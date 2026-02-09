@@ -2,8 +2,9 @@
 
 use paste::paste;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::Frame;
 
-use crate::{BuildCx, Builder, RebuildCx, Tui, UnitState, ViewMarker};
+use crate::{BuildCx, Builder, Draw, RebuildCx, Tui, UnitState, ViewMarker};
 
 /// Direction for layout (vertical or horizontal).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,10 +66,12 @@ impl<Children> LayoutBuilder<Children> {
 /// State for layout builders.
 pub struct LayoutState<S> {
     children: S,
+    /// The areas for each child, computed during build/rebuild
+    areas: Vec<Rect>,
 }
 
-impl<S: ViewMarker> ViewMarker for LayoutState<S> {}
-impl ViewMarker for () {}
+// ViewMarker impls are in the macro below for each tuple size
+impl ViewMarker for LayoutState<()> {}
 
 impl<Output, S: ravel::State<Output>> ravel::State<Output> for LayoutState<S> {
     fn run(&mut self, output: &mut Output) {
@@ -80,21 +83,33 @@ impl<Output, S: ravel::State<Output>> ravel::State<Output> for LayoutState<S> {
 impl Builder<Tui> for LayoutBuilder<()> {
     type State = LayoutState<()>;
 
-    fn build(self, _cx: BuildCx<'_>) -> Self::State {
-        LayoutState { children: () }
+    fn build(self, _cx: BuildCx) -> Self::State {
+        LayoutState {
+            children: (),
+            areas: Vec::new(),
+        }
     }
 
-    fn rebuild(self, _cx: RebuildCx<'_>, _state: &mut Self::State) {}
+    fn rebuild(self, _cx: RebuildCx, _state: &mut Self::State) {}
+}
+
+impl Draw for LayoutState<()> {
+    fn draw(&self, _frame: &mut Frame, _area: Rect) {
+        // Nothing to draw for empty layout
+    }
 }
 
 // Implement Builder for tuple children using a macro
 macro_rules! impl_layout_builder {
     ($($idx:tt: $name:ident),*) => {
         #[allow(non_camel_case_types)]
-        impl<$($name: Builder<Tui>),*> Builder<Tui> for LayoutBuilder<($($name,)*)> {
+        impl<$($name: Builder<Tui>),*> Builder<Tui> for LayoutBuilder<($($name,)*)>
+        where
+            $($name::State: Draw,)*
+        {
             type State = LayoutState<($($name::State,)*)>;
 
-            fn build(self, cx: BuildCx<'_>) -> Self::State {
+            fn build(self, cx: BuildCx) -> Self::State {
                 let chunks = self.split(cx.area);
                 let ($($name,)*) = self.children;
 
@@ -102,17 +117,34 @@ macro_rules! impl_layout_builder {
                     children: (
                         $($name.build(cx.with_area(chunks[$idx])),)*
                     ),
+                    areas: chunks,
                 }
             }
 
-            fn rebuild(self, cx: RebuildCx<'_>, state: &mut Self::State) {
+            fn rebuild(self, cx: RebuildCx, state: &mut Self::State) {
                 let chunks = self.split(cx.area);
+                state.areas = chunks.clone();
                 let ($($name,)*) = self.children;
                 let ($(paste!([< state_ $name >]),)*) = &mut state.children;
 
                 $($name.rebuild(cx.with_area(chunks[$idx]), paste!([< state_ $name >]));)*
             }
         }
+
+        #[allow(non_camel_case_types)]
+        impl<$($name: Draw),*> Draw for LayoutState<($($name,)*)> {
+            fn draw(&self, frame: &mut Frame, _area: Rect) {
+                let ($($name,)*) = &self.children;
+                $(
+                    if let Some(area) = self.areas.get($idx) {
+                        $name.draw(frame, *area);
+                    }
+                )*
+            }
+        }
+
+        #[allow(non_camel_case_types)]
+        impl<$($name: ViewMarker),*> ViewMarker for LayoutState<($($name,)*)> {}
     };
 }
 
@@ -136,11 +168,11 @@ pub fn spacer() -> Spacer {
 impl Builder<Tui> for Spacer {
     type State = UnitState;
 
-    fn build(self, _cx: BuildCx<'_>) -> Self::State {
+    fn build(self, _cx: BuildCx) -> Self::State {
         UnitState
     }
 
-    fn rebuild(self, _cx: RebuildCx<'_>, _state: &mut Self::State) {}
+    fn rebuild(self, _cx: RebuildCx, _state: &mut Self::State) {}
 }
 
 /// Center content within the available area.
@@ -188,16 +220,43 @@ impl<Body> Center<Body> {
     }
 }
 
-impl<Body: Builder<Tui>> Builder<Tui> for Center<Body> {
-    type State = Body::State;
+/// State for a centered container.
+pub struct CenterState<S> {
+    body: S,
+    area: Rect,
+}
 
-    fn build(self, cx: BuildCx<'_>) -> Self::State {
+impl<S: ViewMarker> ViewMarker for CenterState<S> {}
+
+impl<S: Draw> Draw for CenterState<S> {
+    fn draw(&self, frame: &mut Frame, _area: Rect) {
+        self.body.draw(frame, self.area);
+    }
+}
+
+impl<Output, S: ravel::State<Output>> ravel::State<Output> for CenterState<S> {
+    fn run(&mut self, output: &mut Output) {
+        self.body.run(output);
+    }
+}
+
+impl<Body: Builder<Tui>> Builder<Tui> for Center<Body>
+where
+    Body::State: Draw,
+{
+    type State = CenterState<Body::State>;
+
+    fn build(self, cx: BuildCx) -> Self::State {
         let centered = self.centered_area(cx.area);
-        self.body.build(cx.with_area(centered))
+        CenterState {
+            body: self.body.build(cx.with_area(centered)),
+            area: centered,
+        }
     }
 
-    fn rebuild(self, cx: RebuildCx<'_>, state: &mut Self::State) {
+    fn rebuild(self, cx: RebuildCx, state: &mut Self::State) {
         let centered = self.centered_area(cx.area);
-        self.body.rebuild(cx.with_area(centered), state);
+        state.area = centered;
+        self.body.rebuild(cx.with_area(centered), &mut state.body);
     }
 }

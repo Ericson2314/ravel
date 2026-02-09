@@ -1,13 +1,14 @@
 //! Text rendering builders.
 
 use std::borrow::Cow;
-use std::marker::PhantomData;
 
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::Frame;
 
-use crate::{BuildCx, Builder, RebuildCx, Tui, UnitState};
+use crate::{BuildCx, Builder, Draw, RebuildCx, Tui, ViewMarker};
 
 /// A text builder for rendering styled text.
 pub struct Text<'a> {
@@ -37,30 +38,46 @@ impl<'a> Text<'a> {
         self.wrap = true;
         self
     }
+}
 
-    fn render(&self, cx: &BuildCx<'_>) {
-        let mut paragraph = Paragraph::new(self.content.as_ref()).style(self.style);
+/// State for a text component.
+pub struct TextState {
+    content: String,
+    style: Style,
+    wrap: bool,
+}
+
+impl ViewMarker for TextState {}
+
+impl Draw for TextState {
+    fn draw(&self, frame: &mut Frame, area: Rect) {
+        let mut paragraph = Paragraph::new(self.content.as_str()).style(self.style);
         if self.wrap {
             paragraph = paragraph.wrap(Wrap { trim: true });
         }
-        cx.frame().render_widget(paragraph, cx.area);
+        frame.render_widget(paragraph, area);
     }
 }
 
-impl Builder<Tui> for Text<'_> {
-    type State = UnitState;
+impl<Output> ravel::State<Output> for TextState {
+    fn run(&mut self, _output: &mut Output) {}
+}
 
-    fn build(self, cx: BuildCx<'_>) -> Self::State {
-        self.render(&cx);
-        UnitState
+impl Builder<Tui> for Text<'_> {
+    type State = TextState;
+
+    fn build(self, _cx: BuildCx) -> Self::State {
+        TextState {
+            content: self.content.into_owned(),
+            style: self.style,
+            wrap: self.wrap,
+        }
     }
 
-    fn rebuild(self, cx: RebuildCx<'_>, _state: &mut Self::State) {
-        self.render(&BuildCx {
-            frame_wrapper: cx.frame_wrapper,
-            area: cx.area,
-            _marker: PhantomData,
-        });
+    fn rebuild(self, _cx: RebuildCx, state: &mut Self::State) {
+        state.content = self.content.into_owned();
+        state.style = self.style;
+        state.wrap = self.wrap;
     }
 }
 
@@ -76,60 +93,111 @@ pub fn styled_line<'a>(spans: impl Into<Vec<Span<'a>>>) -> StyledLine<'a> {
     }
 }
 
-impl<'a> StyledLine<'a> {
-    fn render(&self, cx: &BuildCx<'_>) {
-        let line = Line::from(self.spans.clone());
+/// State for a styled line component.
+pub struct StyledLineState {
+    spans: Vec<(String, Style)>,
+}
+
+impl ViewMarker for StyledLineState {}
+
+impl Draw for StyledLineState {
+    fn draw(&self, frame: &mut Frame, area: Rect) {
+        let spans: Vec<Span<'_>> = self
+            .spans
+            .iter()
+            .map(|(content, style)| Span::styled(content.as_str(), *style))
+            .collect();
+        let line = Line::from(spans);
         let paragraph = Paragraph::new(line);
-        cx.frame().render_widget(paragraph, cx.area);
+        frame.render_widget(paragraph, area);
     }
 }
 
+impl<Output> ravel::State<Output> for StyledLineState {
+    fn run(&mut self, _output: &mut Output) {}
+}
+
 impl Builder<Tui> for StyledLine<'_> {
-    type State = UnitState;
+    type State = StyledLineState;
 
-    fn build(self, cx: BuildCx<'_>) -> Self::State {
-        self.render(&cx);
-        UnitState
+    fn build(self, _cx: BuildCx) -> Self::State {
+        StyledLineState {
+            spans: self
+                .spans
+                .into_iter()
+                .map(|s| (s.content.into_owned(), s.style))
+                .collect(),
+        }
     }
 
-    fn rebuild(self, cx: RebuildCx<'_>, _state: &mut Self::State) {
-        self.render(&BuildCx {
-            frame_wrapper: cx.frame_wrapper,
-            area: cx.area,
-            _marker: PhantomData,
-        });
+    fn rebuild(self, _cx: RebuildCx, state: &mut Self::State) {
+        state.spans = self
+            .spans
+            .into_iter()
+            .map(|s| (s.content.into_owned(), s.style))
+            .collect();
     }
+}
+
+/// State for a static string.
+pub struct StaticStrState {
+    content: &'static str,
+}
+
+impl ViewMarker for StaticStrState {}
+
+impl Draw for StaticStrState {
+    fn draw(&self, frame: &mut Frame, area: Rect) {
+        let paragraph = Paragraph::new(self.content);
+        frame.render_widget(paragraph, area);
+    }
+}
+
+impl<Output> ravel::State<Output> for StaticStrState {
+    fn run(&mut self, _output: &mut Output) {}
 }
 
 /// Builder for &'static str - allows using string literals directly as views.
 impl Builder<Tui> for &'static str {
-    type State = UnitState;
+    type State = StaticStrState;
 
-    fn build(self, cx: BuildCx<'_>) -> Self::State {
-        let paragraph = Paragraph::new(self);
-        cx.frame().render_widget(paragraph, cx.area);
-        UnitState
+    fn build(self, _cx: BuildCx) -> Self::State {
+        StaticStrState { content: self }
     }
 
-    fn rebuild(self, cx: RebuildCx<'_>, _state: &mut Self::State) {
-        let paragraph = Paragraph::new(self);
-        cx.frame().render_widget(paragraph, cx.area);
+    fn rebuild(self, _cx: RebuildCx, state: &mut Self::State) {
+        state.content = self;
     }
+}
+
+/// State for an owned string.
+pub struct StringState {
+    content: String,
+}
+
+impl ViewMarker for StringState {}
+
+impl Draw for StringState {
+    fn draw(&self, frame: &mut Frame, area: Rect) {
+        let paragraph = Paragraph::new(self.content.as_str());
+        frame.render_widget(paragraph, area);
+    }
+}
+
+impl<Output> ravel::State<Output> for StringState {
+    fn run(&mut self, _output: &mut Output) {}
 }
 
 /// Builder for String - allows using owned strings as views.
 impl Builder<Tui> for String {
-    type State = UnitState;
+    type State = StringState;
 
-    fn build(self, cx: BuildCx<'_>) -> Self::State {
-        let paragraph = Paragraph::new(self);
-        cx.frame().render_widget(paragraph, cx.area);
-        UnitState
+    fn build(self, _cx: BuildCx) -> Self::State {
+        StringState { content: self }
     }
 
-    fn rebuild(self, cx: RebuildCx<'_>, _state: &mut Self::State) {
-        let paragraph = Paragraph::new(self);
-        cx.frame().render_widget(paragraph, cx.area);
+    fn rebuild(self, _cx: RebuildCx, state: &mut Self::State) {
+        state.content = self;
     }
 }
 
@@ -155,19 +223,37 @@ impl<T: std::fmt::Display> Display<T> {
     }
 }
 
-impl<T: std::fmt::Display> Builder<Tui> for Display<T> {
-    type State = UnitState;
+/// State for a display component.
+pub struct DisplayState {
+    content: String,
+    style: Style,
+}
 
-    fn build(self, cx: BuildCx<'_>) -> Self::State {
-        let text = self.value.to_string();
-        let paragraph = Paragraph::new(text).style(self.style);
-        cx.frame().render_widget(paragraph, cx.area);
-        UnitState
+impl ViewMarker for DisplayState {}
+
+impl Draw for DisplayState {
+    fn draw(&self, frame: &mut Frame, area: Rect) {
+        let paragraph = Paragraph::new(self.content.as_str()).style(self.style);
+        frame.render_widget(paragraph, area);
+    }
+}
+
+impl<Output> ravel::State<Output> for DisplayState {
+    fn run(&mut self, _output: &mut Output) {}
+}
+
+impl<T: std::fmt::Display> Builder<Tui> for Display<T> {
+    type State = DisplayState;
+
+    fn build(self, _cx: BuildCx) -> Self::State {
+        DisplayState {
+            content: self.value.to_string(),
+            style: self.style,
+        }
     }
 
-    fn rebuild(self, cx: RebuildCx<'_>, _state: &mut Self::State) {
-        let text = self.value.to_string();
-        let paragraph = Paragraph::new(text).style(self.style);
-        cx.frame().render_widget(paragraph, cx.area);
+    fn rebuild(self, _cx: RebuildCx, state: &mut Self::State) {
+        state.content = self.value.to_string();
+        state.style = self.style;
     }
 }

@@ -3,8 +3,9 @@
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::{Block, BorderType, Borders, Clear};
+use ratatui::Frame;
 
-use crate::{BuildCx, Builder, RebuildCx, Tui, ViewMarker};
+use crate::{BuildCx, Builder, Draw, RebuildCx, Tui, ViewMarker};
 
 /// A modal popup builder.
 pub struct Modal<Body> {
@@ -62,19 +63,6 @@ impl<Body> Modal<Body> {
         self
     }
 
-    fn make_block(&self) -> Block<'_> {
-        let mut block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .style(self.style);
-
-        if let Some(title) = &self.title {
-            block = block.title(title.as_str());
-        }
-
-        block
-    }
-
     fn modal_area(&self, container: Rect) -> Rect {
         match (self.fixed_width, self.fixed_height) {
             (Some(w), Some(h)) => centered_rect_fixed(w, h, container),
@@ -91,46 +79,84 @@ impl<Body> Modal<Body> {
     }
 }
 
-impl<Body: Builder<Tui>> Builder<Tui> for Modal<Body> {
-    type State = ModalState<Body::State>;
-
-    fn build(self, cx: BuildCx<'_>) -> Self::State {
-        let area = self.modal_area(cx.area);
-        let block = self.make_block();
-        let inner = block.inner(area);
-
-        // Clear the background
-        cx.frame().render_widget(Clear, area);
-        cx.frame().render_widget(block, area);
-
-        let body_state = self.body.build(cx.with_area(inner));
-
-        ModalState { body: body_state }
-    }
-
-    fn rebuild(self, cx: RebuildCx<'_>, state: &mut Self::State) {
-        let area = self.modal_area(cx.area);
-        let block = self.make_block();
-        let inner = block.inner(area);
-
-        // Clear the background
-        cx.frame().render_widget(Clear, area);
-        cx.frame().render_widget(block, area);
-
-        self.body.rebuild(cx.with_area(inner), &mut state.body);
-    }
-}
-
 /// State for a modal.
 pub struct ModalState<S> {
     body: S,
+    /// Modal configuration for drawing
+    title: Option<String>,
+    style: Style,
+    /// The outer area (for clearing and drawing the block)
+    outer_area: Rect,
+    /// The inner area (for drawing the body)
+    inner_area: Rect,
 }
 
 impl<S: ViewMarker> ViewMarker for ModalState<S> {}
 
+impl<S: Draw> Draw for ModalState<S> {
+    fn draw(&self, frame: &mut Frame, _area: Rect) {
+        let mut block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .style(self.style);
+
+        if let Some(title) = &self.title {
+            block = block.title(title.as_str());
+        }
+
+        // Clear the background
+        frame.render_widget(Clear, self.outer_area);
+        frame.render_widget(block, self.outer_area);
+
+        self.body.draw(frame, self.inner_area);
+    }
+}
+
 impl<Output, S: ravel::State<Output>> ravel::State<Output> for ModalState<S> {
     fn run(&mut self, output: &mut Output) {
         self.body.run(output);
+    }
+}
+
+impl<Body: Builder<Tui>> Builder<Tui> for Modal<Body>
+where
+    Body::State: Draw,
+{
+    type State = ModalState<Body::State>;
+
+    fn build(self, cx: BuildCx) -> Self::State {
+        let area = self.modal_area(cx.area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .style(self.style);
+        let inner = block.inner(area);
+
+        let body_state = self.body.build(cx.with_area(inner));
+
+        ModalState {
+            body: body_state,
+            title: self.title,
+            style: self.style,
+            outer_area: area,
+            inner_area: inner,
+        }
+    }
+
+    fn rebuild(self, cx: RebuildCx, state: &mut Self::State) {
+        let area = self.modal_area(cx.area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .style(self.style);
+        let inner = block.inner(area);
+
+        state.title = self.title;
+        state.style = self.style;
+        state.outer_area = area;
+        state.inner_area = inner;
+
+        self.body.rebuild(cx.with_area(inner), &mut state.body);
     }
 }
 
@@ -176,17 +202,51 @@ pub fn layer<Base, Overlay>(base: Base, overlay: Overlay) -> Layer<Base, Overlay
     Layer { base, overlay }
 }
 
-impl<Base: Builder<Tui>, Overlay: Builder<Tui>> Builder<Tui> for Layer<Base, Overlay> {
-    type State = (Base::State, Overlay::State);
+/// State for a layer.
+pub struct LayerState<B, O> {
+    base: B,
+    overlay: O,
+    area: Rect,
+}
 
-    fn build(self, cx: BuildCx<'_>) -> Self::State {
+impl<B: ViewMarker, O: ViewMarker> ViewMarker for LayerState<B, O> {}
+
+impl<B: Draw, O: Draw> Draw for LayerState<B, O> {
+    fn draw(&self, frame: &mut Frame, _area: Rect) {
+        self.base.draw(frame, self.area);
+        self.overlay.draw(frame, self.area);
+    }
+}
+
+impl<Output, B: ravel::State<Output>, O: ravel::State<Output>> ravel::State<Output>
+    for LayerState<B, O>
+{
+    fn run(&mut self, output: &mut Output) {
+        self.base.run(output);
+        self.overlay.run(output);
+    }
+}
+
+impl<Base: Builder<Tui>, Overlay: Builder<Tui>> Builder<Tui> for Layer<Base, Overlay>
+where
+    Base::State: Draw,
+    Overlay::State: Draw,
+{
+    type State = LayerState<Base::State, Overlay::State>;
+
+    fn build(self, cx: BuildCx) -> Self::State {
         let base_state = self.base.build(cx);
         let overlay_state = self.overlay.build(cx);
-        (base_state, overlay_state)
+        LayerState {
+            base: base_state,
+            overlay: overlay_state,
+            area: cx.area,
+        }
     }
 
-    fn rebuild(self, cx: RebuildCx<'_>, state: &mut Self::State) {
-        self.base.rebuild(cx, &mut state.0);
-        self.overlay.rebuild(cx, &mut state.1);
+    fn rebuild(self, cx: RebuildCx, state: &mut Self::State) {
+        state.area = cx.area;
+        self.base.rebuild(cx, &mut state.base);
+        self.overlay.rebuild(cx, &mut state.overlay);
     }
 }

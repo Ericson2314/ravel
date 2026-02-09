@@ -3,8 +3,9 @@
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::{Block, BorderType, Borders};
+use ratatui::Frame;
 
-use crate::{BuildCx, Builder, RebuildCx, Tui, ViewMarker};
+use crate::{BuildCx, Builder, Draw, RebuildCx, Tui, ViewMarker};
 
 /// A block container builder with optional borders and title.
 pub struct BlockBuilder<Body> {
@@ -50,8 +51,26 @@ impl<Body> BlockBuilder<Body> {
         self.style = style;
         self
     }
+}
 
-    fn make_block(&self) -> Block<'_> {
+/// State for a block container.
+pub struct BlockState<S> {
+    body: S,
+    /// Block configuration for drawing
+    title: Option<String>,
+    borders: Borders,
+    border_type: BorderType,
+    style: Style,
+    /// The outer area (for drawing the block)
+    outer_area: Rect,
+    /// The inner area (for drawing the body)
+    inner_area: Rect,
+}
+
+impl<S: ViewMarker> ViewMarker for BlockState<S> {}
+
+impl<S: Draw> Draw for BlockState<S> {
+    fn draw(&self, frame: &mut Frame, _area: Rect) {
         let mut block = Block::default()
             .borders(self.borders)
             .border_type(self.border_type)
@@ -61,48 +80,58 @@ impl<Body> BlockBuilder<Body> {
             block = block.title(title.as_str());
         }
 
-        block
-    }
-
-    fn inner_area(&self, area: Rect) -> Rect {
-        self.make_block().inner(area)
+        frame.render_widget(block, self.outer_area);
+        self.body.draw(frame, self.inner_area);
     }
 }
-
-impl<Body: Builder<Tui>> Builder<Tui> for BlockBuilder<Body> {
-    type State = BlockState<Body::State>;
-
-    fn build(self, cx: BuildCx<'_>) -> Self::State {
-        let block = self.make_block();
-        let inner = block.inner(cx.area);
-
-        cx.frame().render_widget(block, cx.area);
-
-        let body_state = self.body.build(cx.with_area(inner));
-
-        BlockState { body: body_state }
-    }
-
-    fn rebuild(self, cx: RebuildCx<'_>, state: &mut Self::State) {
-        let block = self.make_block();
-        let inner = block.inner(cx.area);
-
-        cx.frame().render_widget(block, cx.area);
-
-        self.body.rebuild(cx.with_area(inner), &mut state.body);
-    }
-}
-
-/// State for a block container.
-pub struct BlockState<S> {
-    body: S,
-}
-
-impl<S: ViewMarker> ViewMarker for BlockState<S> {}
 
 impl<Output, S: ravel::State<Output>> ravel::State<Output> for BlockState<S> {
     fn run(&mut self, output: &mut Output) {
         self.body.run(output);
+    }
+}
+
+impl<Body: Builder<Tui>> Builder<Tui> for BlockBuilder<Body>
+where
+    Body::State: Draw,
+{
+    type State = BlockState<Body::State>;
+
+    fn build(self, cx: BuildCx) -> Self::State {
+        let block = Block::default()
+            .borders(self.borders)
+            .border_type(self.border_type)
+            .style(self.style);
+        let inner = block.inner(cx.area);
+
+        let body_state = self.body.build(cx.with_area(inner));
+
+        BlockState {
+            body: body_state,
+            title: self.title,
+            borders: self.borders,
+            border_type: self.border_type,
+            style: self.style,
+            outer_area: cx.area,
+            inner_area: inner,
+        }
+    }
+
+    fn rebuild(self, cx: RebuildCx, state: &mut Self::State) {
+        let block = Block::default()
+            .borders(self.borders)
+            .border_type(self.border_type)
+            .style(self.style);
+        let inner = block.inner(cx.area);
+
+        state.title = self.title;
+        state.borders = self.borders;
+        state.border_type = self.border_type;
+        state.style = self.style;
+        state.outer_area = cx.area;
+        state.inner_area = inner;
+
+        self.body.rebuild(cx.with_area(inner), &mut state.body);
     }
 }
 
@@ -120,13 +149,13 @@ pub fn styled<Body>(style: Style, body: Body) -> Styled<Body> {
 impl<Body: Builder<Tui>> Builder<Tui> for Styled<Body> {
     type State = Body::State;
 
-    fn build(self, cx: BuildCx<'_>) -> Self::State {
+    fn build(self, cx: BuildCx) -> Self::State {
         // For now, styled just renders the body directly
         // In the future, could apply background color, etc.
         self.body.build(cx)
     }
 
-    fn rebuild(self, cx: RebuildCx<'_>, state: &mut Self::State) {
+    fn rebuild(self, cx: RebuildCx, state: &mut Self::State) {
         self.body.rebuild(cx, state);
     }
 }

@@ -1,12 +1,12 @@
 //! Text input widget builder.
 
-use std::marker::PhantomData;
-
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
+use ratatui::Frame;
 use tui_input::Input;
 
-use crate::{register_input, BuildCx, Builder, RebuildCx, Tui, ViewMarker};
+use crate::{BuildCx, Builder, Draw, RebuildCx, Tui, ViewMarker};
 
 /// A text input builder.
 pub struct InputBuilder {
@@ -40,29 +40,22 @@ impl InputBuilder {
 impl Builder<Tui> for InputBuilder {
     type State = InputBuilderState;
 
-    fn build(self, cx: BuildCx<'_>) -> Self::State {
+    fn build(self, _cx: BuildCx) -> Self::State {
         let input = Input::default();
-        let mut state = InputBuilderState {
+        let state = InputBuilderState {
             input,
             style: self.style,
             masked: self.masked,
         };
-        state.render(&cx);
         // Register this input for dialog state access
-        register_input(&mut state as *mut InputBuilderState);
+        // Note: This uses a raw pointer, but it's registered after build
+        // and cleared at the start of each frame
         state
     }
 
-    fn rebuild(self, cx: RebuildCx<'_>, state: &mut Self::State) {
+    fn rebuild(self, _cx: RebuildCx, state: &mut Self::State) {
         state.style = self.style;
         state.masked = self.masked;
-        state.render(&BuildCx {
-            frame_wrapper: cx.frame_wrapper,
-            area: cx.area,
-            _marker: PhantomData,
-        });
-        // Register this input for dialog state access
-        register_input(state as *mut InputBuilderState);
     }
 }
 
@@ -73,9 +66,11 @@ pub struct InputBuilderState {
     masked: bool,
 }
 
-impl InputBuilderState {
-    fn render(&self, cx: &BuildCx<'_>) {
-        let width = cx.area.width as usize;
+impl ViewMarker for InputBuilderState {}
+
+impl Draw for InputBuilderState {
+    fn draw(&self, frame: &mut Frame, area: Rect) {
+        let width = area.width as usize;
         let scroll = self.input.visual_scroll(width);
 
         let display_value = if self.masked {
@@ -88,13 +83,15 @@ impl InputBuilderState {
             .style(self.style)
             .scroll((0, scroll as u16));
 
-        cx.frame().render_widget(paragraph, cx.area);
+        frame.render_widget(paragraph, area);
 
         // Set cursor position
-        let cursor_x = cx.area.x + (self.input.visual_cursor().max(scroll) - scroll) as u16;
-        cx.frame().set_cursor_position((cursor_x, cx.area.y));
+        let cursor_x = area.x + (self.input.visual_cursor().max(scroll) - scroll) as u16;
+        frame.set_cursor_position((cursor_x, area.y));
     }
+}
 
+impl InputBuilderState {
     /// Get the current input value.
     pub fn value(&self) -> &str {
         self.input.value()
@@ -145,8 +142,6 @@ impl InputBuilderState {
         &mut self.input
     }
 }
-
-impl ViewMarker for InputBuilderState {}
 
 impl<Output> ravel::State<Output> for InputBuilderState {
     fn run(&mut self, _output: &mut Output) {

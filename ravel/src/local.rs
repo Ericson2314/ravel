@@ -30,7 +30,8 @@ where
 /// The state of a [`WithLocal`].
 pub struct WithLocalState<T, S> {
     value: T,
-    inner: S,
+    /// The inner state of the wrapped builder.
+    pub inner: S,
 }
 
 impl<Output: Default, T: 'static + Default, S> State<Output>

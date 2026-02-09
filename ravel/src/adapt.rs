@@ -53,7 +53,8 @@ impl<S> Thunk<'_, S> {
 
 /// The state of an [`Adapt`].
 pub struct AdaptState<S, F> {
-    inner: S,
+    /// The inner state of the adapted builder.
+    pub inner: S,
     f: F,
 }
 

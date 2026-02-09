@@ -1,9 +1,11 @@
 //! Throbber/spinner widget builder.
 
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
+use ratatui::Frame;
 use throbber_widgets_tui::{CANADIAN, Throbber, ThrobberState, WhichUse};
 
-use crate::{BuildCx, Builder, RebuildCx, Tui, ViewMarker};
+use crate::{BuildCx, Builder, Draw, RebuildCx, Tui, ViewMarker};
 
 /// A throbber/spinner builder.
 pub struct ThrobberBuilder {
@@ -33,40 +35,54 @@ impl ThrobberBuilder {
         self.throbber_style = style;
         self
     }
-
-    fn make_widget(&self) -> Throbber<'_> {
-        Throbber::default()
-            .label(&self.label)
-            .style(self.style)
-            .throbber_style(self.throbber_style)
-            .throbber_set(CANADIAN)
-            .use_type(WhichUse::Spin)
-    }
 }
 
 impl Builder<Tui> for ThrobberBuilder {
     type State = ThrobberBuilderState;
 
-    fn build(self, cx: BuildCx<'_>) -> Self::State {
-        let mut state = ThrobberState::default();
-        let widget = self.make_widget();
-        cx.frame().render_stateful_widget(widget, cx.area, &mut state);
-        ThrobberBuilderState { state }
+    fn build(self, _cx: BuildCx) -> Self::State {
+        let state = ThrobberState::default();
+        ThrobberBuilderState {
+            state,
+            label: self.label,
+            style: self.style,
+            throbber_style: self.throbber_style,
+        }
     }
 
-    fn rebuild(self, cx: RebuildCx<'_>, state: &mut Self::State) {
+    fn rebuild(self, _cx: RebuildCx, state: &mut Self::State) {
         // Advance the animation
         state.state.calc_next();
-
-        let widget = self.make_widget();
-        cx.frame()
-            .render_stateful_widget(widget, cx.area, &mut state.state);
+        // Update config
+        state.label = self.label;
+        state.style = self.style;
+        state.throbber_style = self.throbber_style;
     }
 }
 
 /// State for a throbber builder.
 pub struct ThrobberBuilderState {
     state: ThrobberState,
+    label: String,
+    style: Style,
+    throbber_style: Style,
+}
+
+impl ViewMarker for ThrobberBuilderState {}
+
+impl Draw for ThrobberBuilderState {
+    fn draw(&self, frame: &mut Frame, area: Rect) {
+        let widget = Throbber::default()
+            .label(&self.label)
+            .style(self.style)
+            .throbber_style(self.throbber_style)
+            .throbber_set(CANADIAN)
+            .use_type(WhichUse::Spin);
+
+        // We need to clone the state to use it mutably
+        let mut state = self.state.clone();
+        frame.render_stateful_widget(widget, area, &mut state);
+    }
 }
 
 impl ThrobberBuilderState {
@@ -75,8 +91,6 @@ impl ThrobberBuilderState {
         self.state.calc_next();
     }
 }
-
-impl ViewMarker for ThrobberBuilderState {}
 
 impl<Output> ravel::State<Output> for ThrobberBuilderState {
     fn run(&mut self, _output: &mut Output) {

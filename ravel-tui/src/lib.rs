@@ -4,8 +4,6 @@
 //! reactive TUI applications using ravel's declarative component model with
 //! ratatui as the rendering layer.
 
-use std::marker::PhantomData;
-
 use ravel::{AdaptState, Builder, CxRep, WithLocalState};
 
 pub use ratatui;
@@ -37,77 +35,29 @@ pub use ravel::with;
 pub struct Tui;
 
 impl CxRep for Tui {
-    type BuildCx<'a> = BuildCx<'a>;
-    type RebuildCx<'a> = RebuildCx<'a>;
-}
-
-/// Opaque wrapper to hold Frame pointer.
-///
-/// This uses raw pointers to avoid lifetime propagation issues with Frame's
-/// invariant lifetime parameters.
-pub struct FrameWrapper {
-    frame: *mut (),
-    area: Rect,
-}
-
-impl FrameWrapper {
-    /// Create a new FrameWrapper from a mutable frame reference.
-    pub fn new(frame: &mut Frame<'_>) -> Self {
-        Self {
-            frame: frame as *mut Frame<'_> as *mut (),
-            area: frame.area(),
-        }
-    }
-
-    /// Get the frame area.
-    pub fn area(&self) -> Rect {
-        self.area
-    }
-
-    /// Get mutable access to the frame for rendering.
-    ///
-    /// # Safety
-    /// The caller must ensure this is only called while the original frame is valid.
-    #[allow(clippy::mut_from_ref)]
-    pub(crate) unsafe fn get_frame<'a>(&self) -> &'a mut Frame<'a> {
-        unsafe { &mut *(self.frame as *mut Frame<'a>) }
-    }
+    type BuildCx<'a> = BuildCx;
+    type RebuildCx<'a> = RebuildCx;
 }
 
 /// Context for building TUI components.
 ///
-/// Contains a reference to the frame buffer and the area allocated for rendering.
+/// Contains the area allocated for rendering. The Frame is passed separately
+/// during the draw phase.
 #[derive(Clone, Copy)]
-pub struct BuildCx<'a> {
-    /// The frame wrapper.
-    frame_wrapper: *const FrameWrapper,
+pub struct BuildCx {
     /// The area allocated for this component
     pub area: Rect,
-    _marker: PhantomData<&'a FrameWrapper>,
 }
 
-impl<'a> BuildCx<'a> {
-    /// Create a new BuildCx from a frame wrapper and area.
-    pub fn new(frame_wrapper: &'a FrameWrapper, area: Rect) -> Self {
-        Self {
-            frame_wrapper,
-            area,
-            _marker: PhantomData,
-        }
-    }
-
-    /// Get mutable access to the frame for rendering.
-    pub fn frame(&self) -> &mut Frame<'_> {
-        unsafe { (*self.frame_wrapper).get_frame() }
+impl BuildCx {
+    /// Create a new BuildCx with the given area.
+    pub fn new(area: Rect) -> Self {
+        Self { area }
     }
 
     /// Create a child context with a different area.
     pub fn with_area(&self, area: Rect) -> Self {
-        Self {
-            frame_wrapper: self.frame_wrapper,
-            area,
-            _marker: PhantomData,
-        }
+        Self { area }
     }
 }
 
@@ -115,69 +65,53 @@ impl<'a> BuildCx<'a> {
 ///
 /// For immediate-mode TUI rendering, this is functionally identical to BuildCx.
 #[derive(Clone, Copy)]
-pub struct RebuildCx<'a> {
-    /// The frame wrapper.
-    frame_wrapper: *const FrameWrapper,
+pub struct RebuildCx {
     /// The area allocated for this component
     pub area: Rect,
-    _marker: PhantomData<&'a FrameWrapper>,
 }
 
-impl<'a> RebuildCx<'a> {
-    /// Create a new RebuildCx from a frame wrapper and area.
-    pub fn new(frame_wrapper: &'a FrameWrapper, area: Rect) -> Self {
-        Self {
-            frame_wrapper,
-            area,
-            _marker: PhantomData,
-        }
-    }
-
-    /// Get mutable access to the frame for rendering.
-    pub fn frame(&self) -> &mut Frame<'_> {
-        unsafe { (*self.frame_wrapper).get_frame() }
+impl RebuildCx {
+    /// Create a new RebuildCx with the given area.
+    pub fn new(area: Rect) -> Self {
+        Self { area }
     }
 
     /// Create a child context with a different area.
     pub fn with_area(&self, area: Rect) -> Self {
-        Self {
-            frame_wrapper: self.frame_wrapper,
-            area,
-            _marker: PhantomData,
-        }
+        Self { area }
     }
 
     /// Convert to a BuildCx with the same area.
-    ///
-    /// This is useful for calling build functions from rebuild contexts.
-    pub fn as_build_cx(&self) -> BuildCx<'a> {
-        BuildCx {
-            frame_wrapper: self.frame_wrapper,
-            area: self.area,
-            _marker: PhantomData,
-        }
+    pub fn as_build_cx(&self) -> BuildCx {
+        BuildCx { area: self.area }
     }
+}
 
-    /// Convert to a BuildCx with a different area.
-    pub fn build_cx_with_area(&self, area: Rect) -> BuildCx<'a> {
-        BuildCx {
-            frame_wrapper: self.frame_wrapper,
-            area,
-            _marker: PhantomData,
-        }
-    }
+/// Trait for drawing state to a frame.
+///
+/// This is the core trait for immediate-mode rendering in ravel-tui.
+/// State types implement this to render themselves when given a Frame.
+pub trait Draw {
+    /// Draw this state to the frame at the given area.
+    fn draw(&self, frame: &mut Frame, area: Rect);
 }
 
 /// Marker trait for TUI view state types.
 ///
 /// This is implemented for state types that represent valid TUI components.
-pub trait ViewMarker {}
+pub trait ViewMarker: Draw {}
 
 /// Unit state type for components with no state.
 /// We use our own wrapper to allow implementing State trait.
 pub struct UnitState;
 
 impl ViewMarker for UnitState {}
+
+impl Draw for UnitState {
+    fn draw(&self, _frame: &mut Frame, _area: Rect) {
+        // Nothing to draw
+    }
+}
 
 impl<Output> ravel::State<Output> for UnitState {
     fn run(&mut self, _output: &mut Output) {}
@@ -186,8 +120,28 @@ impl<Output> ravel::State<Output> for UnitState {
 impl<T: 'static, S: ViewMarker> ViewMarker for WithLocalState<T, S> {}
 impl<S: ViewMarker, F> ViewMarker for AdaptState<S, F> {}
 
+impl<T: 'static, S: Draw> Draw for WithLocalState<T, S> {
+    fn draw(&self, frame: &mut Frame, area: Rect) {
+        self.inner.draw(frame, area);
+    }
+}
+
+impl<S: Draw, F> Draw for AdaptState<S, F> {
+    fn draw(&self, frame: &mut Frame, area: Rect) {
+        self.inner.draw(frame, area);
+    }
+}
+
 // Implement ViewMarker for Option of ViewMarker types
 impl<S: ViewMarker> ViewMarker for Option<S> {}
+
+impl<S: Draw> Draw for Option<S> {
+    fn draw(&self, frame: &mut Frame, area: Rect) {
+        if let Some(state) = self {
+            state.draw(frame, area);
+        }
+    }
+}
 
 macro_rules! tuple_view_marker {
     ($($a:ident),*) => {
@@ -209,6 +163,41 @@ tuple_view_marker!(a, b, c, d, e, f);
 tuple_view_marker!(a, b, c, d, e, f, g);
 tuple_view_marker!(a, b, c, d, e, f, g, h);
 
+macro_rules! tuple_draw {
+    () => {
+        impl Draw for () {
+            fn draw(&self, _frame: &mut Frame, _area: Rect) {
+                // Nothing to draw for empty tuple
+            }
+        }
+    };
+    ($($a:ident),+) => {
+        #[allow(non_camel_case_types)]
+        impl<$($a),+> Draw for ($($a,)+)
+        where
+            $($a: Draw,)+
+        {
+            fn draw(&self, frame: &mut Frame, area: Rect) {
+                let ($($a,)+) = self;
+                $($a.draw(frame, area);)+
+            }
+        }
+    };
+}
+
+tuple_draw!();
+tuple_draw!(a);
+tuple_draw!(a, b);
+tuple_draw!(a, b, c);
+tuple_draw!(a, b, c, d);
+tuple_draw!(a, b, c, d, e);
+tuple_draw!(a, b, c, d, e, f);
+tuple_draw!(a, b, c, d, e, f, g);
+tuple_draw!(a, b, c, d, e, f, g, h);
+
+// Empty tuple is a ViewMarker
+impl ViewMarker for () {}
+
 /// Trait for TUI views.
 ///
 /// These types can be used as components in the TUI component tree.
@@ -224,170 +213,107 @@ where
 }
 
 /// Wrapper for Option state to allow implementing State trait.
-pub struct OptionState<S>(pub Option<S>);
+pub struct OptionState<S> {
+    pub inner: Option<S>,
+    /// The area this option was built/rebuilt with
+    pub area: Rect,
+}
 
 impl<S: ViewMarker> ViewMarker for OptionState<S> {}
 
+impl<S: Draw> Draw for OptionState<S> {
+    fn draw(&self, frame: &mut Frame, _area: Rect) {
+        if let Some(state) = &self.inner {
+            state.draw(frame, self.area);
+        }
+    }
+}
+
 impl<S: ravel::State<O>, O> ravel::State<O> for OptionState<S> {
     fn run(&mut self, output: &mut O) {
-        if let Some(state) = &mut self.0 {
+        if let Some(state) = &mut self.inner {
             state.run(output);
         }
     }
 }
 
 // Implement Builder for Option<B> where B: Builder
-impl<B: Builder<Tui>> Builder<Tui> for Option<B> {
+impl<B: Builder<Tui>> Builder<Tui> for Option<B>
+where
+    B::State: Draw,
+{
     type State = OptionState<B::State>;
 
-    fn build(self, cx: BuildCx<'_>) -> Self::State {
-        OptionState(self.map(|b| b.build(cx)))
+    fn build(self, cx: BuildCx) -> Self::State {
+        OptionState {
+            inner: self.map(|b| b.build(cx)),
+            area: cx.area,
+        }
     }
 
-    fn rebuild(self, cx: RebuildCx<'_>, state: &mut Self::State) {
-        match (self, &mut state.0) {
+    fn rebuild(self, cx: RebuildCx, state: &mut Self::State) {
+        state.area = cx.area;
+        match (self, &mut state.inner) {
             (Some(builder), Some(inner_state)) => {
                 builder.rebuild(cx, inner_state);
             }
-            (Some(builder), state @ None) => {
-                *state = Some(builder.build(BuildCx {
-                    frame_wrapper: cx.frame_wrapper,
-                    area: cx.area,
-                    _marker: PhantomData,
-                }));
+            (Some(builder), inner @ None) => {
+                *inner = Some(builder.build(cx.as_build_cx()));
             }
-            (None, state) => {
-                *state = None;
+            (None, inner) => {
+                *inner = None;
             }
         }
     }
 }
 
-/// Run a frame with build or rebuild.
+/// Run a frame with build or rebuild, then draw.
 ///
-/// This function handles the lifetime complexity of ratatui's Frame by using
-/// a closure-based API. The state is passed by mutable reference and updated in place.
+/// This function handles the two-phase rendering:
+/// 1. Build/rebuild phase: construct or update the state tree
+/// 2. Draw phase: render the state tree to the frame
 ///
 /// # Example
 /// ```ignore
-/// let mut ui_state: Option<MyState> = None;
+/// let mut ui_state: UiState<MyState> = UiState::new();
 /// terminal.draw(|f| {
 ///     run_frame(f, &mut ui_state, || my_builder(&app));
 /// })?;
 /// ```
-pub fn run_frame<S, B, F>(frame: &mut Frame<'_>, state: &mut UiState<S>, make_builder: F)
+pub fn run_frame<S: Draw, B, F>(frame: &mut Frame<'_>, state: &mut UiState<S>, make_builder: F)
 where
     B: Builder<Tui, State = S>,
     F: FnOnce() -> B,
 {
-    // Clear dialog state at start of each frame
-    state.dialog_state.clear();
-    clear_input_registration();
-
     let area = frame.area();
-    let frame_wrapper = FrameWrapper::new(frame);
     let builder = make_builder();
 
     match &mut state.view_state {
         None => {
-            let new_state = builder.build(BuildCx::new(&frame_wrapper, area));
-            // Safety: S has no lifetime parameters (it's a concrete type passed by the caller).
-            // The build() function returns S, which we know doesn't borrow from frame_wrapper
-            // because the Builder trait's State type has no lifetime connection to BuildCx.
-            // We use ptr::write to avoid the borrow checker's conservative analysis.
-            unsafe {
-                let state_ptr = &mut state.view_state as *mut Option<S>;
-                std::ptr::write(state_ptr, Some(new_state));
-            }
+            let new_state = builder.build(BuildCx::new(area));
+            state.view_state = Some(new_state);
         }
         Some(s) => {
-            builder.rebuild(RebuildCx::new(&frame_wrapper, area), s);
+            builder.rebuild(RebuildCx::new(area), s);
         }
     }
 
-    // Update dialog state from thread-local registration
-    state.dialog_state.update_from_registration();
-}
-
-use std::cell::RefCell;
-
-thread_local! {
-    static DIALOG_INPUT: RefCell<Option<*mut InputBuilderState>> = const { RefCell::new(None) };
-}
-
-/// Register an input state for later access via DialogState.
-pub(crate) fn register_input(state: *mut InputBuilderState) {
-    DIALOG_INPUT.with(|cell| {
-        *cell.borrow_mut() = Some(state);
-    });
-}
-
-/// Clear the registered input state.
-fn clear_input_registration() {
-    DIALOG_INPUT.with(|cell| {
-        *cell.borrow_mut() = None;
-    });
-}
-
-/// Get the registered input state.
-fn get_registered_input() -> Option<*mut InputBuilderState> {
-    DIALOG_INPUT.with(|cell| *cell.borrow())
-}
-
-/// A container for dialog-related state that can be accessed from outside the view tree.
-///
-/// This is populated by modal dialogs containing input fields during rendering.
-pub struct DialogState {
-    input: Option<*mut InputBuilderState>,
-}
-
-impl DialogState {
-    /// Create a new empty DialogState.
-    pub fn new() -> Self {
-        Self { input: None }
-    }
-
-    /// Get mutable access to the input state, if present.
-    ///
-    /// # Safety
-    /// This returns a mutable reference from a raw pointer. The caller must ensure
-    /// the DialogState is only used while the UI state it references is valid.
-    pub fn input_state(&mut self) -> Option<&mut InputBuilderState> {
-        self.input.map(|ptr| unsafe { &mut *ptr })
-    }
-
-    /// Clear all state references.
-    pub fn clear(&mut self) {
-        self.input = None;
-    }
-
-    /// Update from thread-local registered input.
-    fn update_from_registration(&mut self) {
-        self.input = get_registered_input();
+    // Draw phase: render the state tree to the frame
+    if let Some(s) = &state.view_state {
+        s.draw(frame, area);
     }
 }
 
-impl Default for DialogState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Complete UI state including view state and dialog state.
+/// Complete UI state wrapping the view state.
 pub struct UiState<S> {
     /// The view tree state.
     pub view_state: Option<S>,
-    /// Dialog state for accessing input fields.
-    pub dialog_state: DialogState,
 }
 
 impl<S> UiState<S> {
     /// Create a new UiState.
     pub fn new() -> Self {
-        Self {
-            view_state: None,
-            dialog_state: DialogState::new(),
-        }
+        Self { view_state: None }
     }
 }
 
